@@ -12,7 +12,7 @@ from pytorchvideo.transforms import (
     Normalize,
 )
 from torchvision.transforms import Compose, Lambda, Resize
-from pytorchvideo.models.hub import slow_r50
+from pytorchvideo.models.hub import x3d_m
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import numpy as np
 import pandas as pd
@@ -20,6 +20,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 # Class Names
 class_names = [
@@ -30,7 +32,7 @@ class_names = [
 NUM_CLASSES = 10
 BATCH_SIZE = 16
 NUM_EPOCHS = 10
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-3
 NUM_FRAMES = 16
 SIDE_SIZE = 256
 MEAN = [0.45, 0.45, 0.45]
@@ -94,17 +96,21 @@ min_class_size = class_counts.min()
 # Sample an equal number from each class
 sampled_files = []
 sampled_labels = []
-for label in class_counts.index:
-    # Get all video files corresponding to this label
-    class_videos = [video for video, video_label in zip(video_files, labels) if video_label == label]
-    # Randomly sample 'min_class_size' number of videos from this class
-    sampled_class_files = np.random.choice(class_videos, size=min_class_size, replace=False)
-    sampled_files.extend(sampled_class_files)
-    sampled_labels.extend([label] * min_class_size)
 
-# Verify the class distribution in the sampled dataset
+for label in class_counts.index:
+    class_videos = [video for video, video_label in zip(video_files, labels) if video_label == label]
+    if label == 1 or label == 5:
+        # Use 1070 samples for classes 1 and 5
+        sampled_class_files = np.random.choice(class_videos, size=1070, replace=False)
+    else:
+        # Use 426 samples for other classes
+        sampled_class_files = np.random.choice(class_videos, size=426, replace=False)
+    sampled_files.extend(sampled_class_files)
+    sampled_labels.extend([label] * len(sampled_class_files))
+
+# Verify the new class distribution
 sampled_class_counts = pd.Series(sampled_labels).value_counts().sort_index()
-print("\nSampled Class Distribution (equal samples from each class):")
+print("\nUpdated Class Distribution:")
 print(sampled_class_counts)
 
 # Split the sampled dataset into train, validation, and test sets
@@ -130,19 +136,35 @@ val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_w
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
 # Model Setup
-model = slow_r50(pretrained=True)
+model = x3d_m(pretrained=True)
+for i, block in enumerate(model.blocks):
+    if hasattr(block, 'proj'):
+        block.proj = nn.Sequential(
+            block.proj,
+            nn.Dropout(p=0.3)
+        )
+
 model.blocks[5].proj = nn.Sequential(
     nn.Linear(2048, 128),
     nn.ReLU(),
-    nn.Dropout(0.3),
+    nn.Dropout(0.5),
     nn.Linear(128, NUM_CLASSES),
 )
+
 model = model.to(DEVICE)
 
+# Compute class weights
+class_weights = compute_class_weight(
+    class_weight="balanced",
+    classes=np.unique(sampled_labels),
+    y=sampled_labels
+)
+class_weights = torch.tensor(class_weights, dtype=torch.float32).to(DEVICE)
+
 # Loss Function and Optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
 
 # Training Function
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, patience, unfreeze_schedule=None):
@@ -259,7 +281,7 @@ def test_model(model, test_loader, class_names):
 
 # Confusion Matrix Plot
 def plot_confusion_matrix(y_true, y_pred, class_names):
-    cm = confusion_matrix(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred, normalize="true")
     plt.figure(figsize=(10, 8))
     sns.heatmap(
         cm,
@@ -271,7 +293,7 @@ def plot_confusion_matrix(y_true, y_pred, class_names):
     )
     plt.xlabel("Predicted")
     plt.ylabel("True")
-    plt.title("Confusion Matrix")
+    plt.title("Normalized Confusion Matrix")
     plt.savefig("confusion_matrix.png")
     plt.show()
 
@@ -279,8 +301,8 @@ def plot_confusion_matrix(y_true, y_pred, class_names):
 if __name__ == "__main__":
     unfreeze_schedule = {
         4: 4,  # Unfreeze block 4 at epoch 5
-        6: 3,  # Unfreeze block 3 at epoch 6
-        8: 2,  # Unfreeze block 2 at epoch 7
+        6: 3,
+        8: 2
     }
     train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, NUM_EPOCHS, 5, unfreeze_schedule)
     model.load_state_dict(torch.load("best_model.pth"))
