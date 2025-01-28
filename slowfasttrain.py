@@ -145,12 +145,25 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
 # Training Function
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs):
-    best_val_accuracy = 0.0
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, patience, unfreeze_schedule=None):
+    best_val_loss = float('inf')
+    epochs_without_improvement = 0
+
+    # Freeze the base model's weights initially
+    for name, param in model.named_parameters():
+        if "blocks.5" not in name:  # Freeze all layers except blocks.5
+            param.requires_grad = False
 
     for epoch in range(num_epochs):
         model.train()
         train_loss, train_correct, train_total = 0.0, 0, 0
+
+        # Unfreeze the base model's weights after the specified epoch
+        if unfreeze_schedule and epoch in unfreeze_schedule:
+            print(f"Unfreezing blocks starting from block {unfreeze_schedule[epoch]} at epoch {epoch + 1}")
+            for name, param in model.named_parameters():
+                if f"blocks.{unfreeze_schedule[epoch]}" in name:  # Unfreeze the specified block and earlier blocks
+                    param.requires_grad = True
 
         # Wrap train_loader with tqdm for progress bar
         train_loader_tqdm = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", leave=False)
@@ -185,9 +198,15 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             f"Val Accuracy: {val_accuracy:.4f}"
         )
 
-        if val_accuracy > best_val_accuracy:
-            best_val_accuracy = val_accuracy
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), "best_model.pth")
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                print("Early stopping triggered.")
+                break
 
         scheduler.step()
 
@@ -258,6 +277,11 @@ def plot_confusion_matrix(y_true, y_pred, class_names):
 
 # Main Execution
 if __name__ == "__main__":
-    train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, NUM_EPOCHS)
+    unfreeze_schedule = {
+        4: 4,  # Unfreeze block 4 at epoch 5
+        6: 3,  # Unfreeze block 3 at epoch 6
+        8: 2,  # Unfreeze block 2 at epoch 7
+    }
+    train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, NUM_EPOCHS, 5, unfreeze_schedule)
     model.load_state_dict(torch.load("best_model.pth"))
     test_model(model, test_loader, class_names)
