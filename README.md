@@ -8,9 +8,7 @@ This project focuses on classifying basketball actions from video clips using a 
 ## Table of Contents
 1. [Project Overview](#project-overview)
 2. [Dataset](#dataset)
-3. [Installation](#installation)
-6. [Training](#training)
-7. [Evaluation](#evaluation)
+3. [Requirements](#requirements)
 8. [Results](#results)
 
 ---
