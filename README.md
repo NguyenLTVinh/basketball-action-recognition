@@ -128,4 +128,4 @@ ball in hand       0.87      0.72      0.79       160
    macro avg       0.75      0.77      0.75       833
 weighted avg       0.78      0.76      0.77       833
 ```
-![Confusion Matrix](./confusion_matrix.png "Confusion Matrix")
+![Confusion Matrix](./assets/confusion_matrix.png "Confusion Matrix")
